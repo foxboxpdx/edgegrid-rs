@@ -51,7 +51,18 @@ pub struct Authenticator {
     pub host: String,
     pub client_token: String,
     pub client_secret: String,
-    pub access_token: String
+    pub access_token: String,
+}
+
+// Data required to generate the EdgeGrid authentication header for a particular api request
+#[derive(Default)]
+pub struct RequestData {
+    pub request_uri: String,
+    pub headers: HashMap<String, String>,
+    pub body: String,
+    pub max_body: usize,
+    pub unsigned_header: String,
+    pub signed_header: String
 }
 
 impl Authenticator {
@@ -115,7 +126,7 @@ impl Authenticator {
     }
 
     // Create a tab-separated string with all data that will be used in signing
-    fn make_data_to_sign(&self, request: &mut UnsignedRequest, method: &str) -> String {
+    fn make_data_to_sign(&self, request: &mut RequestData, method: &str) -> String {
         let (body_hash, trunc_body) = Authenticator::process_body(&request.body, request.max_body, method);
         // Replace the USRQ body with truncated body
         request.body = trunc_body;
@@ -137,7 +148,7 @@ impl Authenticator {
     }
 
     // Build and sign the authorization header
-    fn make_auth_header(&self, timestamp: &str, request: &mut UnsignedRequest, method: &str) -> String {
+    fn make_auth_header(&self, timestamp: &str, request: &mut RequestData, method: &str) {
         // Generate the unsigned auth header by combining tokens, timestamp, and a nonce
         let auth_header = format!("EG1-HMAC-SHA256 client_token={};access_token={};timestamp={};nonce={};",
                             self.client_token,
@@ -151,10 +162,10 @@ impl Authenticator {
 
         // Send everything off for signing and add the resulting base64 sha256 HMAC to the header string;
         // return the result
-        format!("{}signature={}", auth_header, self.sign_request(request, method, timestamp))
+        request.signed_header = format!("{}signature={}", auth_header, self.sign_request(request, method, timestamp));
     }
 
-    fn sign_request(&self, request: &mut UnsignedRequest, method: &str, timestamp: &str) -> String {
+    fn sign_request(&self, request: &mut RequestData, method: &str, timestamp: &str) -> String {
         let data = self.make_data_to_sign(request, method);
         let key = self.make_signing_key(timestamp);
         Authenticator::base64_hmac_sha256(&data, &key)
@@ -171,50 +182,38 @@ impl Authenticator {
             host: h.to_string(),
             client_token: ct.to_string(),
             client_secret: cs.to_string(),
-            access_token: at.to_string()
+            access_token: at.to_string(),
+            ..Default::default()
         }
     }
 
-    // Generate the Authorization header for a GET request
-    pub fn get(&self, request: &mut UnsignedRequest) -> SignedRequest {
+    pub fn get(&self, mut request: RequestData) -> String {
         // Generate a timestamp in the format Akamai demands
         let timestamp = OffsetDateTime::now_utc().format("%Y%m%dT%H:%M:%S+0000");
 
         // Do all the things
-        let signed_header = self.make_auth_header(&timestamp, request, "GET");
+        self.make_auth_header(&timestamp, &mut request, "GET");
 
         // Hand the result back
-        SignedRequest::new(&signed_header)
+        request.signed_header
     }
 
     // Generate the Authroization header for a POST request
-    pub fn post(&self, request: &mut UnsignedRequest) -> SignedRequest {
+    pub fn post(&self, mut request: RequestData) -> (String, String) {
         // Generate timestamp
         let timestamp = OffsetDateTime::now_utc().format("%Y%m%dT%H:%M:%S+0000");
 
         // Do all the things
-        let signed_header = self.make_auth_header(&timestamp, request, "POST");
+        self.make_auth_header(&timestamp, &mut request, "POST");
 
         // Hand back the result
-        SignedRequest::new(&signed_header).with_body(&request.body)
+        (request.signed_header, request.body)
     }
 }
 
-// Data required to generate the EdgeGrid authentication header for a particular api request
-#[derive(Default)]
-pub struct UnsignedRequest {
-    pub request_uri: String,
-    pub headers: HashMap<String, String>,
-    pub body: String,
-    pub max_body: usize,
-    pub unsigned_header: String
-}
-
-impl UnsignedRequest {
-    // Since we have 4 possible variants for a user to create an UnsignedRequest, use the
-    // builder pattern so they can set as many or as few as they want
-    pub fn new(uri: &str) -> UnsignedRequest {
-        UnsignedRequest {
+impl RequestData {
+    pub fn new(uri: &str) -> RequestData {
+        RequestData {
             request_uri: uri.to_string(),
             ..Default::default()
         }
@@ -236,24 +235,34 @@ impl UnsignedRequest {
     }
 }
 
-// Authentication header and (if necessary) truncated request body
-#[derive(Default)]
-pub struct SignedRequest {
-    pub auth_header: String,
-    pub body: String
+#[macro_export]
+macro_rules! sign_get_request {
+    // Takes an Authenticator and a URI
+    ($auther:expr, $uri:expr) => {
+        $auther.get(edgegrid_rs::RequestData::new($uri))
+    };
+    // Takes an Authenticator, a URI, and hashmap of headers
+    ($auther:expr, $uri:expr, $heads:expr) => {
+        $auther.get(edgegrid_rs::RequestData::new($uri).with_headers($heads))
+    };
 }
 
-impl SignedRequest {
-    // Builder pattern again in case we want to add more fields later
-    pub fn new(header: &str) -> SignedRequest {
-        SignedRequest {
-            auth_header: header.to_string(),
-            ..Default::default()
-        }
-    }
-
-    pub fn with_body(mut self, body: &str) -> Self {
-        self.body = body.to_string();
-        self
-    }
+#[macro_export]
+macro_rules! sign_post_request {
+    // Takes an Authenticator and a URI
+    ($auther:expr, $uri:expr) => {
+        $auther.post(mut RequestData::new($uri))
+    };
+    // Takes an Authenticator, a URI, and a body
+    ($auther:expr, $uri:expr, $body:expr) => {
+        $auther.post(mut RequestData::new($uri).with_body($body))
+    };
+    // Takes an authenticator, a uri, a body, and a max_body
+    ($auther:expr, $uri:expr, $body:expr, $max:expr) => {
+        $auther.post(mut RequestData::new($uri).with_body($body).with_max_body($max))
+    };
+    // Takes auth, uri, body, max_body, and header hashmap
+    ($auther:expr, $uri:expr, $body:expr, $max:expr, $heads:expr) => {
+        $auther.post(mut RequestData::new($uri).with_body($body).with_max_body($max).with_headers($heads))
+    };
 }

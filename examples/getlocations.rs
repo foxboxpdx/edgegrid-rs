@@ -6,35 +6,35 @@ instantiate an Authenticator and UnsignedRequest to hit the edge server location
 API endpoint using a simple blocking Reqwest client.  Should work fine with an async client.
 
 Expects the following environment variables:
-CLIENT_TOKEN
-CLIENT_SECRET
-ACCESS_TOKEN
-AKAMAI_API_HOST
+client_token
+client_secret
+access_token
+host (the akamai api endpoint hostname for the given account credentials)
 
 */
 
 extern crate reqwest;
-extern crate edgegrid_rs;
+#[macro_use] extern crate edgegrid_rs;
 
-use edgegrid_rs::{Authenticator, UnsignedRequest};
+use edgegrid_rs::Authenticator;
 use reqwest::header;
 use std::env;
 
 fn main() {
     // Pull in required env vars
-    let ctoken = match env::var("CLIENT_TOKEN") {
+    let ctoken = match env::var("client_token") {
         Ok(x) => x,
         Err(_) => panic!("Missing client token env var")
     };
-    let csecret = match env::var("CLIENT_SECRET") {
+    let csecret = match env::var("client_secret") {
         Ok(x) => x,
         Err(_) => panic!("Missing client secret env var")
     };
-    let atoken = match env::var("ACCESS_TOKEN") {
+    let atoken = match env::var("access_token") {
         Ok(x) => x,
         Err(_) => panic!("Missing access token env var")
     };
-    let apihost = match env::var("AKAMAI_API_HOST") {
+    let apihost = match env::var("host") {
         Ok(x) => x,
         Err(_) => panic!("Missing api host env var")
     };
@@ -51,16 +51,13 @@ fn main() {
         Err(e) => { panic!("Error building client: {}", e); }
     };
 
-    // Prepare the unsigned request - no body or headers needed
-    let mut req = UnsignedRequest::new(uri);
-
     // Generate the signed auth header
-    let signed = authenticator.get(&mut req);
+    let signed = sign_get_request!(&authenticator, &uri);
 
     // Send the request and auth header to akamai
     let fullurl = format!("https://{}{}", apihost, uri);
     let result = client.get(&fullurl)
-        .header(header::AUTHORIZATION, &signed.auth_header)
+        .header(header::AUTHORIZATION, &signed)
         .send();
     
     match result {
