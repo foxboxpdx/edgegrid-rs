@@ -74,7 +74,11 @@ impl Authenticator {
     fn base64_hmac_sha256(data: &str, keystr: &str) -> String {
         let key = PKey::hmac(keystr.as_bytes()).unwrap();
         let mut signer = Signer::new(MessageDigest::sha256(), &key).unwrap();
-        let hmac = signer.sign_oneshot_to_vec(data.as_bytes()).unwrap();
+        // For some reason, sign_oneshot_to_vec is missing from the MUSL-C
+        // version of Openssl v0.10.33, so we gotta do this the long way
+        // let hmac = signer.sign_oneshot_to_vec(data.as_bytes()).unwrap();
+        signer.update(data.as_bytes()).unwrap();
+        let hmac = signer.sign_to_vec().unwrap();
         encode_block(&hmac).trim().to_string()
     }
 
